@@ -1,0 +1,173 @@
+
+// This is a template for a Supabase Edge Function.
+// Save this file with a .ts extension and deploy using the Supabase CLI
+// Learn more: https://supabase.com/docs/guides/functions
+
+import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    // Create a Supabase client with admin privileges
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+      {
+        global: {
+          headers: { Authorization: req.headers.get('Authorization')! },
+        },
+      }
+    )
+
+    // Get the JWT token from the authorization header
+    const token = req.headers.get('Authorization')?.split(' ')[1]
+    if (!token) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Verify the JWT and get the user
+    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token)
+    if (userError || !user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized', details: userError }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Parse the request body
+    const { userId, title, body, data = {} } = await req.json()
+    
+    if (!userId || !title || !body) {
+      return new Response(JSON.stringify({ error: 'Missing required parameters' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Get the user's device tokens
+    const { data: deviceTokens, error: deviceError } = await supabaseAdmin
+      .from('device_tokens')
+      .select('token, platform')
+      .eq('user_id', userId)
+    
+    if (deviceError) {
+      return new Response(JSON.stringify({ error: 'Error fetching device tokens', details: deviceError }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+    
+    if (!deviceTokens || deviceTokens.length === 0) {
+      return new Response(JSON.stringify({ message: 'No device tokens found for this user' }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+    
+    // Create a record of the notification in the database
+    const { data: notification, error: notificationError } = await supabaseAdmin
+      .from('notifications')
+      .insert({
+        user_id: userId,
+        type: data.type || 'general',
+        title,
+        message: body,
+        data,
+        read: false,
+      })
+      .select()
+      .single()
+    
+    if (notificationError) {
+      console.error('Error creating notification record:', notificationError)
+    }
+    
+    // Send the notification via FCM or APNs
+    const results = await Promise.all(
+      deviceTokens.map(async (device) => {
+        try {
+          if (device.platform === 'android') {
+            // Send via Firebase Cloud Messaging (FCM)
+            const fcmResponse = await fetch('https://fcm.googleapis.com/fcm/send', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `key=${Deno.env.get('FCM_SERVER_KEY')}`,
+              },
+              body: JSON.stringify({
+                to: device.token,
+                notification: {
+                  title,
+                  body,
+                },
+                data: {
+                  ...data,
+                  notificationId: notification?.id,
+                },
+              }),
+            })
+            
+            return {
+              token: device.token,
+              platform: 'android',
+              success: fcmResponse.ok,
+              response: await fcmResponse.json(),
+            }
+          } else if (device.platform === 'ios') {
+            // For iOS, we'd use APNs
+            // This is a simplified placeholder
+            return {
+              token: device.token,
+              platform: 'ios',
+              success: false,
+              error: 'APNs not implemented in this example',
+            }
+          }
+          
+          return {
+            token: device.token,
+            platform: device.platform,
+            success: false,
+            error: 'Unsupported platform',
+          }
+        } catch (error) {
+          return {
+            token: device.token,
+            platform: device.platform,
+            success: false,
+            error: error.message,
+          }
+        }
+      })
+    )
+    
+    // Return the results
+    return new Response(
+      JSON.stringify({
+        message: 'Notifications processed',
+        successCount: results.filter(r => r.success).length,
+        totalCount: results.length,
+        results,
+        notification,
+      }),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }
+    )
+  } catch (error) {
+    console.error('Error:', error)
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
+})

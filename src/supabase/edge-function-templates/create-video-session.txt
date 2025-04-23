@@ -1,0 +1,155 @@
+
+// This is a template for a Supabase Edge Function.
+// Save this file with a .ts extension and deploy using the Supabase CLI
+// Learn more: https://supabase.com/docs/guides/functions
+
+import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+import { Twilio } from 'https://esm.sh/twilio@4.7.2'
+
+// Create Twilio client - use Deno.env to access environment variables
+const twilioClient = new Twilio(
+  Deno.env.get('TWILIO_ACCOUNT_SID') || '',
+  Deno.env.get('TWILIO_AUTH_TOKEN') || ''
+)
+
+serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    // Create a Supabase client with the Auth context of the logged in user
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      {
+        global: {
+          headers: { Authorization: req.headers.get('Authorization')! },
+        },
+      }
+    )
+
+    // Get the JWT token from the authorization header
+    const token = req.headers.get('Authorization')?.split(' ')[1]
+    if (!token) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Verify the JWT and get the user
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(token)
+    if (userError || !user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized', details: userError }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Parse the request body
+    const { appointmentId } = await req.json()
+    if (!appointmentId) {
+      return new Response(JSON.stringify({ error: 'Missing appointmentId parameter' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Get the appointment details to verify permissions
+    const { data: appointment, error: appointmentError } = await supabaseClient
+      .from('appointments')
+      .select('*')
+      .eq('id', appointmentId)
+      .single()
+
+    if (appointmentError || !appointment) {
+      return new Response(JSON.stringify({ error: 'Appointment not found', details: appointmentError }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Check if the user is either the client or the lawyer
+    if (user.id !== appointment.client_id && user.id !== appointment.lawyer_id) {
+      return new Response(JSON.stringify({ error: 'Not authorized to access this appointment' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Create a unique room name
+    const roomName = `lawyers-anywhere-${appointmentId}`
+
+    // Create a Twilio video room (or use an existing one)
+    let room
+    try {
+      // Check if room exists
+      room = await twilioClient.video.v1.rooms(roomName).fetch()
+    } catch {
+      // Create room if it doesn't exist
+      room = await twilioClient.video.v1.rooms.create({
+        uniqueName: roomName,
+        type: 'group',
+        statusCallback: `${Deno.env.get('SUPABASE_URL')}/functions/v1/video-webhook`,
+      })
+    }
+
+    // Create an access token with the user's identity
+    const { AccessToken } = Twilio.jwt
+    const { VideoGrant } = AccessToken
+    
+    // Create a "grant" which enables a client to use Video
+    const videoGrant = new VideoGrant({
+      room: roomName,
+    })
+
+    // Create an access token
+    const accessToken = new AccessToken(
+      Deno.env.get('TWILIO_ACCOUNT_SID') || '',
+      Deno.env.get('TWILIO_API_KEY') || '',
+      Deno.env.get('TWILIO_API_SECRET') || ''
+    )
+
+    // Set the identity of the token
+    accessToken.identity = `${user.id}-${appointment.client_id === user.id ? 'client' : 'lawyer'}`
+
+    // Add the grant to the token
+    accessToken.addGrant(videoGrant)
+
+    // Update the appointment with the meeting URL
+    const { error: updateError } = await supabaseClient
+      .from('appointments')
+      .update({
+        meeting_url: `video://lawyers-anywhere/${roomName}`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', appointmentId)
+
+    if (updateError) {
+      console.error('Error updating appointment:', updateError)
+    }
+
+    // Return the room and token to the client
+    return new Response(
+      JSON.stringify({
+        roomName,
+        token: accessToken.toJwt(),
+        expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
+        appointment,
+      }),
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }
+    )
+  } catch (error) {
+    console.error('Error:', error)
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
+})
