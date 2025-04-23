@@ -6,7 +6,7 @@ const config: CapacitorConfig = {
   appName: 'LawyersAnywhere',
   webDir: 'dist',
   server: {
-    url: 'https://691e6b84-0309-4419-8aff-1cb4af2494f6.lovableproject.com?forceHideBadge=true',
+    // url: 'https://691e6b84-0309-4419-8aff-1cb4af2494f6.lovableproject.com?forceHideBadge=true',
     cleartext: true,
   },
   plugins: {
