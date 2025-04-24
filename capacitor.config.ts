@@ -7,6 +7,7 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     // url: 'https://691e6b84-0309-4419-8aff-1cb4af2494f6.lovableproject.com?forceHideBadge=true',
+    allowNavigation:["webserver.greenacres-popcorn.com"],
     cleartext: true,
   },
   plugins: {
