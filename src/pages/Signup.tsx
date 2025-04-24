@@ -9,6 +9,8 @@ import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { UserProfileType } from '@/lib/supabase';
 import { Loader2 } from 'lucide-react';
+import API from '../lib/api';
+
 
 const Signup: React.FC = () => {
   const [formData, setFormData] = useState({
@@ -61,6 +63,21 @@ const Signup: React.FC = () => {
         userData.specialty = formData.specialty;
         userData.years_experience = formData.yearsExperience ? parseInt(formData.yearsExperience) : undefined;
       }
+
+      const response = await API.post('/register', {
+              formData,
+            });
+            console.log("check responseee",response);
+      
+            if (response.status !== 200) {
+              toast({
+                title: 'Login failed',
+                description: response.data?.message || 'Invalid credentials',
+                variant: 'destructive',
+              });
+              return;
+            }
+
       
       const { error } = await signUp(formData.email, formData.password, userData);
       

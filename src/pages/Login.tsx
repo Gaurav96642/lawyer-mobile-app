@@ -1,24 +1,23 @@
-
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
+import { Http } from '@capacitor-community/http';
+import API from '../lib/api';
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { signIn } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!email || !password) {
       toast({
         title: 'Error',
@@ -27,22 +26,35 @@ const Login: React.FC = () => {
       });
       return;
     }
-    
+
     setIsSubmitting(true);
-    
+
     try {
-      const { error } = await signIn(email, password);
+      const response = await API.post('/login', {
+        email,
+        password,
+      });
+
+      console.log("resssssss login", response);
       
-      if (error) {
+
+      if (response.status !== 200) {
         toast({
           title: 'Login failed',
-          description: error.message,
+          description: response.data?.message || 'Invalid credentials',
           variant: 'destructive',
         });
         return;
       }
-      
-      // Navigate to dashboard on successful login
+
+      // 🔐 Optional: Save token to local storage or secure storage
+      // localStorage.setItem('token', response.data.token);
+
+      toast({
+        title: 'Login successful',
+        description: 'Redirecting...',
+      });
+
       navigate('/client-dashboard');
     } catch (error: any) {
       toast({
