@@ -30,7 +30,7 @@ const Login: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      const response = await API.post('/login', {
+      const response = await API.post('', {
         email,
         password,
       });
